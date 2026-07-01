@@ -827,16 +827,44 @@ Your file must contain these 5 columns:
     st.divider()
 
     # --- Step 2 ---
-    st.markdown("### Step 2 — Upload your data")
+    st.markdown("### Step 2 — Upload your data or enter it manually")
     st.markdown(
         """
-Use the **Data Input** panel in the left sidebar to upload your file.
+You have **two ways** to get data into the tool — choose whichever suits you:
 
+**Option A — Upload a file** using the **Data Input** panel in the left sidebar.
 - **Supported formats:** `.csv`, `.xlsx`, `.xls`
 - **Also supported:** the lecturer's multi-sheet `TCG633_PCI_IRI_Pro` Excel template — upload it as-is, no reformatting needed. The tool automatically reads the `PCI_Input` and `IRI_Input` sheets.
 - **No file yet?** Click **Load Built-in Dataset** in the sidebar to instantly load a pre-filled example dataset (10 road sections, S1–S10) so you can explore all the pages right away.
 
 Once uploaded, the sidebar will show a green confirmation message and the number of rows loaded. Go to **Upload & Preview** in the sidebar to see and confirm your raw data before analysis.
+        """
+    )
+
+    st.divider()
+
+    # --- Step 2b ---
+    st.markdown("### Step 2 (Alternative) — Enter data manually")
+    st.markdown(
+        """
+If you do not have a spreadsheet file ready, you can type your data directly into the tool using the **✏️ Enter Data Manually** page in the sidebar. No file preparation needed.
+
+**How it works:**
+
+1. Open **Enter Data Manually** from the sidebar.
+2. Fill in the form at the top of the page:
+   - **Section ID** — type the section name, e.g. `S1`, `S2`, `S3`.
+   - **Defect Type** — choose from the dropdown (8 defect types supported).
+   - **Severity** — choose `Low`, `Medium`, or `High`.
+   - **Area Percentage (%)** — how much of the section surface is affected (e.g. `6` means 6%). Set to `0` if you are only recording an IRI reading.
+   - **IRI (m/km)** — the roughness value for this section. Set to `0` if you are only recording defects with no roughness reading.
+3. Click **➕ Add Row**. The row appears in the table below the form.
+4. Repeat for every defect on every section. If a section has more than one defect, add one row per defect — use the same Section ID each time (e.g. add `S1/Potholes/High/6/3.8` as one row, then `S1/Raveling/Low/10/3.8` as a second row).
+5. Made a mistake? Use the **Delete selected row** field to remove a specific row by its row number, or **Clear all rows** to start over.
+6. When all your data is entered, click **✅ Use This Data for Analysis**. The tool immediately loads your data and it becomes available on the Dashboard, Charts, Hybrid Index, GIS Map, and Report pages.
+7. Optionally, click **⬇️ Download as CSV** to save what you entered as a `.csv` file — you can re-upload this file later without needing to re-enter everything.
+
+> **Tip:** you can mix approaches. For example, enter your data manually first to test the tool, then download the CSV, add more rows in Excel, and re-upload it later.
         """
     )
 
