@@ -795,10 +795,17 @@ st.markdown(
 
 def page_how_to_use():
     st.subheader("How to Use This Tool")
+
+    st.markdown("This tool helps you evaluate road pavement condition using two standard indicators — **PCI** (Pavement Condition Index) and **IRI** (International Roughness Index) — and automatically recommends a maintenance action for each road section.")
+
+    st.divider()
+
+    # --- Step 1 ---
+    st.markdown("### Step 1 — Prepare your data")
     st.markdown(
         """
-**1. Prepare your data.**  Build a spreadsheet/CSV with one row per observed
-defect (or per IRI sample) using these columns:
+Create a spreadsheet or CSV file with **one row per defect** observed on each road section.
+Your file must contain these 5 columns:
 
 | Section | Defect Type | Severity | Area Percentage (%) | IRI |
 |---|---|---|---|---|
@@ -806,120 +813,330 @@ defect (or per IRI sample) using these columns:
 | S1 | Raveling | Low | 10 | 3.8 |
 | S2 | Longitudinal Crack | Low | 4 | 1.9 |
 
-- One **Section** can repeat across several rows — one row per defect found in that section.
-- **Severity** must be `Low`, `Medium`, or `High`.
-- **Area Percentage (%)** is the percentage of the sample area affected by that defect.
-- **IRI** (m/km) can repeat on every row of a section, or be supplied once — the
-  tool averages whatever IRI values it finds for that section.
-- You only need defect columns **or** IRI — the tool computes PCI-only,
-  IRI-only, or a combined rating depending on what's available.
-- The lecturer's own multi-sheet `TCG633_PCI_IRI_Pro` Excel template is also
-  supported directly — just upload it as-is, no reformatting needed.
+**Column explanations:**
+- **Section** — the road section ID (e.g. S1, S2, S3 ...). If a section has multiple defects, it will appear in multiple rows.
+- **Defect Type** — the type of pavement defect observed. Supported types: `Longitudinal Crack`, `Alligator (Fatigue) Crack`, `Potholes`, `Raveling`, `Depression/Sag`, `Patching (Failed)`, `Bleeding/Flushing`, `Rut/Rutting`.
+- **Severity** — must be exactly `Low`, `Medium`, or `High`.
+- **Area Percentage (%)** — how much of the section area is affected by that defect, as a percentage (e.g. `6` means 6%).
+- **IRI (m/km)** — the roughness reading for that section. You can repeat the same IRI value on every defect row for a section, or just fill it in once — the tool will average all IRI values it finds per section.
 
-**2. Upload the file** using the **Data Input** panel on the left, or click
-**Load Built-in Dataset** to try the tool immediately.
-
-**3. Explore the pages** in the sidebar:
-- **Dashboard** — KPI cards and overall network condition.
-- **Detailed Results** — section summary, defect-level computation, downloads.
-- **Charts** — PCI/IRI by section, defect distribution, condition distribution.
-- **Hybrid Index** *(bonus)* — a single 0-100 number blending PCI and IRI with
-  an adjustable weight. Explained in detail below.
-- **GIS Map** *(bonus)* — a simulated map view of sections coloured by condition.
-  Explained in detail below.
-- **Report Generator** *(bonus)* — one-click downloadable HTML report
-  (printable to PDF from your browser).
-- **Methodology & Assumptions** — every formula and assumption, for your report.
+> **You don't need all columns.** If you only have defect data (no IRI), the tool computes PCI only. If you only have IRI (no defect data), the tool computes IRI only. Both together gives the full combined rating.
         """
     )
 
     st.divider()
-    st.markdown("### 🧮 Hybrid Index — what it is and how to use it")
+
+    # --- Step 2 ---
+    st.markdown("### Step 2 — Upload your data")
     st.markdown(
         """
-The rest of the app already gives each section one **Combined Condition
-Rating** (Very Good / Good / Fair / Poor) by taking whichever of PCI or IRI
-is worse — that's the lecturer's official rule, and it's what Dashboard,
-Detailed Results, and Charts all use.
+Use the **Data Input** panel in the left sidebar to upload your file.
 
-The **Hybrid Index page adds a second, optional view**: instead of a category
-label, it gives you **one number from 0 to 100** per section, blending PCI
-and IRI together — similar to how a final exam grade might blend coursework
-and a final paper.
+- **Supported formats:** `.csv`, `.xlsx`, `.xls`
+- **Also supported:** the lecturer's multi-sheet `TCG633_PCI_IRI_Pro` Excel template — upload it as-is, no reformatting needed. The tool automatically reads the `PCI_Input` and `IRI_Input` sheets.
+- **No file yet?** Click **Load Built-in Dataset** in the sidebar to instantly load a pre-filled example dataset (10 road sections, S1–S10) so you can explore all the pages right away.
 
-**How the blend works:**
-1. IRI (which is normally a *roughness* number like 1.6 or 4.5, where
-   **lower is better**) is first converted onto the **same 0–100 scale as
-   PCI** (where **higher is better**), so the two numbers can be combined
-   meaningfully.
-2. You move a **slider** (e.g. "70% PCI") to decide how much weight goes to
-   PCI vs IRI. Example: a 70/30 split means `Hybrid Index = 0.7 × PCI + 0.3 × IRI Score`.
-3. The result is one number per section, classified using the same bands as
-   PCI (≥85 Very Good, ≥70 Good, ≥55 Fair, below that Poor).
-
-**Why use it:** the official rating is good for *deciding what category a
-section falls into*, but a single number is often more useful for *ranking*
-sections against each other (e.g. "which 3 sections are worst overall?") or
-for a report chart. It's clearly labelled as a supplementary/bonus metric —
-it doesn't replace the official rating anywhere else in the app.
-
-**To use it:** open the **Hybrid Index** page, drag the weight slider to
-whatever split you want to discuss in your report (60/40 PCI-weighted is the
-default, since PCI usually carries more engineering detail), and read the
-resulting table/chart. You can download just this table as a CSV too.
+Once uploaded, the sidebar will show a green confirmation message and the number of rows loaded. Go to **Upload & Preview** in the sidebar to see and confirm your raw data before analysis.
         """
     )
 
     st.divider()
-    st.markdown("### 🗺️ GIS Map — what it is and how to use it")
+
+    # --- Step 3 ---
+    st.markdown("### Step 3 — View your results")
     st.markdown(
         """
-**Important first:** your dataset only has columns like `Section`,
-`Defect Type`, `IRI`, etc — it does **not** contain any real GPS
-coordinates (latitude/longitude). So this page cannot show you the *real*
-location of your road sections on Earth. What it shows instead is a
-**simulated, illustrative map** — useful to demonstrate what a real
-GIS-based asset-management dashboard would look like, using made-up but
-realistic positions.
+Once data is loaded, navigate the pages in the sidebar:
 
-**How the simulation works:** the page takes your sections (S1, S2, S3, ...)
-and lays them out one after another along a straight line, like beads on a
-string, starting from a point you choose and walking a fixed distance
-(default 100m, matching "100m sections" in the brief) in a direction you
-choose, for every section.
+| Page | What you get |
+|---|---|
+| 📊 **Dashboard** | KPI summary cards (total sections, average PCI, average IRI, poor sections count) and a condition distribution chart |
+| 📋 **Detailed Results** | Full section-level summary table, defect-level computation breakdown, and download buttons |
+| 📈 **Charts** | Interactive bar charts — PCI by section, IRI by section, defect type distribution, and condition rating distribution |
+| 🧮 **Hybrid Index** | A single 0-100 score per section that blends PCI and IRI together — see Step 4 below |
+| 🗺️ **GIS Map** | A visual map showing your sections plotted by location — see Step 5 below |
+| 📄 **Report Generator** | Auto-generates a complete HTML report you can download and print as PDF |
+| 📐 **Methodology & Assumptions** | Full explanation of every formula, factor, and assumption used in all calculations |
+        """
+    )
 
-**The 4 controls on the page, explained:**
-| Control | What it means | Example |
+    st.divider()
+
+    # --- Step 4 ---
+    st.markdown("### Step 4 — Explore the Hybrid Index")
+    st.markdown(
+        """
+The **Dashboard**, **Detailed Results**, and **Charts** pages all use the official Combined Condition Rating — a category label (Very Good / Good / Fair / Poor) based on whichever of PCI or IRI is worse for each section.
+
+The **Hybrid Index** page adds a different, optional view: instead of a category label, it produces **one number from 0 to 100 per section**, blending PCI and IRI together into a single score.
+
+**How the Hybrid Index is calculated:**
+1. IRI is first converted onto the same 0–100 scale as PCI, using the same classification boundaries (≥85 = Very Good, ≥70 = Good, ≥55 = Fair, below 55 = Poor). This step is needed because IRI normally goes in the opposite direction — a lower IRI is better, while a higher PCI is better.
+2. A **weight slider** lets you decide how much PCI matters vs IRI. For example, if you set it to 70%:
+   > `Hybrid Index = 0.70 × PCI + 0.30 × IRI Score`
+3. The result is classified using the same bands as PCI.
+
+**When to use it:** the Hybrid Index is useful when you want to **rank sections in priority order** (the section with the lowest Hybrid Index needs attention most) or when you want a single number to display in a report chart. It supplements — but does not replace — the official Combined Condition Rating used elsewhere.
+
+**How to use the page:**
+1. Open **Hybrid Index** in the sidebar.
+2. Move the slider to set how much weight goes to PCI (default is 60%).
+3. Read the table and chart. The table also shows the IRI Score (the rescaled 0–100 version of IRI) alongside the original IRI so you can see how the conversion works.
+4. Click **Download Hybrid Index (CSV)** to save just this table.
+        """
+    )
+
+    st.divider()
+
+    # --- Step 5 ---
+    st.markdown("### Step 5 — View the GIS Map")
+    st.markdown(
+        """
+The **GIS Map** page shows your road sections plotted on an interactive map, colour-coded by condition (🟢 Very Good, 🔵 Good, 🟡 Fair, 🔴 Poor).
+
+**Important note:** pavement survey data (defect types, severity, IRI) does not include GPS coordinates, so the positions on the map are **simulated** — the sections are placed along a straight illustrative route, not their real physical locations. This is clearly labelled on the page.
+
+**The 4 controls on the GIS Map page:**
+
+| Control | What it does | Suggested value |
 |---|---|---|
-| **Start latitude / longitude** | Where section S1 is placed on the map. Defaults to a point near Kuching, Sarawak. | `1.4655`, `110.4538` |
-| **Road direction (° from North)** | Which way the imaginary road runs. 0° = North, 90° = East, 180° = South, 270° = West. | `90` (road runs East) |
-| **Spacing between sections (m)** | How far apart each section is placed. | `100` (matches the brief's 100m sections) |
+| **Start latitude** | Sets where section S1 appears on the map (north–south position) | `1.4655` — a point near Kuching, Sarawak |
+| **Start longitude** | Sets where section S1 appears on the map (east–west position) | `110.4538` |
+| **Road direction (° from North)** | The direction the simulated road runs. 0° = North, 90° = East, 180° = South, 270° = West. | `90` (runs East) |
+| **Spacing between sections (m)** | How far apart consecutive sections are placed | `100` (each section is 100m long) |
 
-Change any of these and the map + coordinate table below update instantly —
-there's no "real" answer to get right, it's just for visualising the layout.
-
-**What the colours mean:** each point on the map is coloured the same way as
-the rest of the app — 🟢 green = Very Good, 🔵 blue = Good, 🟡 yellow = Fair,
-🔴 red = Poor — using each section's **Combined Condition Rating**. So even
-though the *positions* are made up, the *colours* reflect your real
-computed results.
-
-**To use it for your report/video:** open the **GIS Map** page, leave the
-defaults (or tweak the direction/spacing to taste), and point out that the
-red/poor-condition markers are the ones needing priority maintenance — this
-is exactly the kind of view a real JKR GIS dashboard would use, just with
-illustrative rather than surveyed coordinates. The page itself displays a
-warning banner saying the same thing, so it's clear to anyone reviewing your
-submission that this is a simulation, not real survey data.
+**How to use the page:**
+1. Open **GIS Map** in the sidebar.
+2. Leave the defaults, or change the start point to a location on the road you are studying.
+3. The map and the section coordinate table below it update immediately.
+4. Hover over any dot on the map to see the section name and condition details.
+5. The colour of each dot reflects the **Combined Condition Rating** — so even though positions are simulated, the colour coding is based on your real computed results.
         """
     )
 
-    st.info(
-        "Tip for your video presentation: walk through Upload → Dashboard → "
-        "Results → Charts → Hybrid Index → GIS Map → Report — covers "
-        "'Demonstration' and 'Results' in Part B in one smooth pass.",
-        icon="🎬",
+    st.divider()
+
+    # --- Step 6 ---
+    st.markdown("### Step 6 — Generate and download a report")
+    st.markdown(
+        """
+The **Report Generator** page builds a complete, self-contained report in one click.
+
+1. Open **Report Generator** in the sidebar.
+2. Click **Generate Report**.
+3. A preview of the report appears below the button.
+4. Click **Download Report (HTML)** to save the file.
+5. Open the downloaded `.html` file in any web browser.
+6. To get a PDF: in the browser, press **Ctrl+P** (or **Cmd+P** on Mac) → change destination to **Save as PDF** → Save.
+
+The report includes: KPI summary, PCI and IRI charts, full section results table, defect-level detail, Hybrid Index table (if you visited that page first), and a methodology summary — everything you need for a technical report submission.
+        """
     )
+
+
+def page_manual_entry():
+    st.subheader("✏️ Enter Data Manually")
+    st.markdown(
+        "Fill in the form below to add pavement condition data row by row. "
+        "Each row represents **one defect** observed in one road section. "
+        "When you are done adding all rows, click **✅ Use This Data for Analysis** "
+        "to send it to the Dashboard, Charts, and all other pages."
+    )
+
+    # Initialise the in-memory row list
+    if "manual_rows" not in st.session_state:
+        st.session_state["manual_rows"] = []
+
+    # ------------------------------------------------------------------ form
+    st.markdown("#### ➕ Add a new row")
+    with st.form("manual_entry_form", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            section_input = st.text_input(
+                "Section ID *",
+                placeholder="e.g. S1",
+                help="The road section identifier. Use the same ID for all defects in the same section.",
+            )
+        with c2:
+            defect_input = st.selectbox(
+                "Defect Type *",
+                options=[
+                    "Longitudinal Crack",
+                    "Alligator (Fatigue) Crack",
+                    "Potholes",
+                    "Raveling",
+                    "Depression/Sag",
+                    "Patching (Failed)",
+                    "Bleeding/Flushing",
+                    "Rut/Rutting",
+                ],
+                help="Select the type of pavement defect observed.",
+            )
+        with c3:
+            severity_input = st.selectbox(
+                "Severity *",
+                options=["Low", "Medium", "High"],
+                help="How severe the defect is.",
+            )
+
+        c4, c5 = st.columns(2)
+        with c4:
+            area_input = st.number_input(
+                "Area Percentage (%)",
+                min_value=0.0, max_value=100.0, value=0.0, step=0.5,
+                help="Percentage of the section area affected by this defect (0–100).",
+            )
+        with c5:
+            iri_input = st.number_input(
+                "IRI (m/km)",
+                min_value=0.0, max_value=20.0, value=0.0, step=0.1,
+                help="International Roughness Index reading for this section (m/km). "
+                     "Leave as 0 if you are only recording defect data (no roughness measurement).",
+            )
+
+        submitted = st.form_submit_button("➕ Add Row", type="primary", use_container_width=True)
+
+    if submitted:
+        if not section_input.strip():
+            st.error("Section ID is required. Please enter a section name (e.g. S1).")
+        elif area_input == 0.0 and iri_input == 0.0:
+            st.warning(
+                "Both Area Percentage and IRI are 0. "
+                "Please enter at least one non-zero value before adding this row.",
+            )
+        else:
+            new_row = {
+                "Section": section_input.strip().upper(),
+                "Defect Type": defect_input if area_input > 0 else None,
+                "Severity": severity_input if area_input > 0 else None,
+                "Area Percentage (%)": area_input if area_input > 0 else None,
+                "IRI": iri_input if iri_input > 0 else None,
+            }
+            st.session_state["manual_rows"].append(new_row)
+            st.success(
+                f"Row added — Section **{new_row['Section']}**, "
+                f"{defect_input} ({severity_input}), "
+                f"Area {area_input}%, IRI {iri_input} m/km."
+            )
+
+    # ---------------------------------------------------------- current table
+    rows = st.session_state["manual_rows"]
+
+    if rows:
+        st.markdown(f"#### 📋 Rows entered so far ({len(rows)} total)")
+
+        preview_df = pd.DataFrame(rows)
+        preview_df = preview_df.fillna("—")
+
+        # Display with a row-number column so users can identify which to delete
+        display_df = preview_df.copy()
+        display_df.insert(0, "#", range(1, len(display_df) + 1))
+        st.dataframe(display_df, use_container_width=True, hide_index=True, height=min(400, 55 + 35 * len(rows)))
+
+        # Delete a row
+        st.markdown("#### 🗑️ Delete a row")
+        col_del, col_clr = st.columns([2, 1])
+        with col_del:
+            row_to_delete = st.number_input(
+                "Enter the row number to delete (see # column above)",
+                min_value=1, max_value=len(rows), step=1, value=1,
+                key="delete_row_num",
+            )
+            if st.button("🗑️ Delete selected row", use_container_width=True):
+                st.session_state["manual_rows"].pop(int(row_to_delete) - 1)
+                st.rerun()
+        with col_clr:
+            st.markdown("&nbsp;")
+            if st.button("🧹 Clear all rows", use_container_width=True):
+                st.session_state["manual_rows"] = []
+                st.session_state.pop("df_raw", None)
+                st.session_state.pop("data_source", None)
+                st.rerun()
+
+        st.divider()
+
+        # -------------------------------------------------- use / download
+        st.markdown("#### ✅ Use this data")
+        col_use, col_csv = st.columns(2)
+        with col_use:
+            if st.button(
+                "✅ Use This Data for Analysis",
+                type="primary",
+                use_container_width=True,
+                help="Sends all rows above to the Dashboard, Charts, Hybrid Index, GIS Map, and Report pages.",
+            ):
+                out_df = pd.DataFrame(rows)
+                for col in CANONICAL_COLS:
+                    if col not in out_df.columns:
+                        out_df[col] = None
+                out_df = out_df[CANONICAL_COLS]
+                st.session_state["df_raw"] = out_df
+                st.session_state["data_source"] = f"Manually entered data ({len(rows)} rows)"
+                # Clear any cached computation so it reruns with the new data
+                st.session_state.pop("_summary_df", None)
+                st.session_state.pop("_detail_df", None)
+                st.session_state.pop("_hybrid_df", None)
+                st.session_state.pop("_report_html", None)
+                st.success(
+                    f"✅ Done! {len(rows)} rows are now loaded. "
+                    "Go to **Dashboard** or **Charts** in the sidebar to see your results."
+                )
+
+        with col_csv:
+            out_df_dl = pd.DataFrame(rows)
+            for col in CANONICAL_COLS:
+                if col not in out_df_dl.columns:
+                    out_df_dl[col] = None
+            out_df_dl = out_df_dl[CANONICAL_COLS]
+            st.download_button(
+                "⬇️ Download as CSV",
+                data=out_df_dl.to_csv(index=False).encode("utf-8"),
+                file_name=f"manual_entry_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                help="Download your entered rows as a CSV file that you can re-upload later.",
+            )
+
+    else:
+        st.info(
+            "No rows added yet. Fill in the form above and click **➕ Add Row** "
+            "to start building your dataset.",
+            icon="👆",
+        )
+
+    # ---------------------------------------------------------- quick guide
+    with st.expander("📖 Tips for filling in the form", expanded=False):
+        st.markdown(
+            """
+**Section ID** — Use a short label like `S1`, `S2`, `S3` etc. All defects found on the
+same stretch of road should share the same Section ID. There is no limit on how many rows
+you can add per section.
+
+**Defect Type** — Choose from the dropdown. These match the 8 types recognised by the
+PCI calculation model. If your defect isn't in the list, choose the closest one and note
+it in your report.
+
+**Severity** — Choose `Low`, `Medium`, or `High` based on how badly the defect is
+affecting the road surface.
+
+**Area Percentage (%)** — Estimate what fraction of the section's surface area shows
+this defect. For example, if roughly 1/10 of the road is cracked, enter `10`.
+Set to `0` if you are only recording an IRI reading for this row (no defect).
+
+**IRI (m/km)** — The roughness value measured by a profilometer or similar device for
+this section. If you are only recording defects (no roughness measurement available),
+leave this as `0`. You can also repeat the same IRI value on every row of a section —
+the tool will average all values per section automatically.
+
+**Adding multiple defects per section:** simply add one row per defect, using the same
+Section ID. Example — S1 has two defects: add S1/Potholes/High/6/3.8 as one row, then
+add S1/Raveling/Low/10/3.8 as a second row.
+
+**Saving your work:** click **⬇️ Download as CSV** at any time to save your entered rows
+as a file. You can re-upload this CSV later from the sidebar without needing to re-enter
+everything.
+            """
+        )
 
 
 def page_upload_preview():
@@ -1454,6 +1671,7 @@ with st.sidebar:
         [
             st.Page(page_how_to_use, title="How to Use", icon="🏠", default=True),
             st.Page(page_upload_preview, title="Upload & Preview", icon="📥"),
+            st.Page(page_manual_entry, title="Enter Data Manually", icon="✏️"),
             st.Page(page_dashboard, title="Dashboard", icon="📊"),
             st.Page(page_detailed_results, title="Detailed Results", icon="📋"),
             st.Page(page_charts, title="Charts", icon="📈"),
