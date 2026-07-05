@@ -21,7 +21,6 @@
 # =============================================================================
 
 import io
-import math
 from datetime import datetime
 
 import numpy as np
@@ -487,9 +486,75 @@ def df_to_excel_bytes(sheets: dict) -> bytes:
     return buf.getvalue()
 
 
+def df_to_zip_bytes(sheets: dict) -> bytes:
+    """Create a ZIP archive of CSVs — one CSV per sheet.
+    Uses only Python built-ins (zipfile, csv, io) — no extra packages needed.
+    Works even when openpyxl/xlsxwriter are not installed."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, df in sheets.items():
+            safe_name = name.replace(" ", "_").replace("/", "-")[:31]
+            csv_bytes = df.to_csv(index=False).encode("utf-8")
+            zf.writestr(f"{safe_name}.csv", csv_bytes)
+    return buf.getvalue()
+
+
 def condition_badge(label: str) -> str:
     color = CONDITION_COLORS.get(label, "#777")
     return f'<span class="badge" style="background:{color}">{label}</span>'
+
+
+# Colour maps used by style_dataframe
+SEVERITY_COLORS = {
+    "Low":    {"bg": "#E8F5E9", "fg": "#1B5E20"},   # soft green
+    "Medium": {"bg": "#FFF8E1", "fg": "#F57F17"},   # soft amber
+    "High":   {"bg": "#FFEBEE", "fg": "#B71C1C"},   # soft red
+}
+
+CONDITION_BG = {
+    "Very Good":          {"bg": "#E8F5E9", "fg": "#1B5E20"},
+    "Very Good (Smooth)": {"bg": "#E8F5E9", "fg": "#1B5E20"},
+    "Good":               {"bg": "#E3F2FD", "fg": "#0D47A1"},
+    "Good / Satisfactory":{"bg": "#E3F2FD", "fg": "#0D47A1"},
+    "Fair":               {"bg": "#FFF8E1", "fg": "#E65100"},
+    "Poor":               {"bg": "#FFEBEE", "fg": "#B71C1C"},
+    "Poor (Rough)":       {"bg": "#FFEBEE", "fg": "#B71C1C"},
+}
+
+
+def _cell_color(val, mapping: dict) -> str:
+    """Return a pandas Styler CSS string for a cell value looked up in mapping."""
+    entry = mapping.get(str(val).strip(), {})
+    if not entry:
+        return ""
+    return f"background-color: {entry['bg']}; color: {entry['fg']}; font-weight: 600;"
+
+
+def style_dataframe(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    """Apply colour coding to condition label and severity columns only.
+    Numeric columns (PCI, IRI values, Hybrid Index) are left uncoloured
+    so the table stays clean and easy to read.
+    """
+    styler = df.style
+
+    # pandas ≥2.1 renamed applymap → map; support both
+    _applymap = getattr(styler, "map", None) or getattr(styler, "applymap")
+
+    # --- Severity labels ---
+    if "Severity" in df.columns:
+        styler = _applymap(
+            lambda v: _cell_color(v, SEVERITY_COLORS), subset=["Severity"]
+        )
+
+    # --- Condition label columns (any column with "Condition" in the name) ---
+    cond_cols = [c for c in df.columns if "Condition" in c]
+    for col in cond_cols:
+        styler = _applymap(
+            lambda v: _cell_color(v, CONDITION_BG), subset=[col]
+        )
+
+    return styler
 
 
 # -----------------------------------------------------------------------------
@@ -557,35 +622,7 @@ def compute_hybrid_index(summary_df: pd.DataFrame, w_pci: float) -> pd.DataFrame
 
 
 # -----------------------------------------------------------------------------
-# BONUS FEATURE 2 — GIS MAPPING (simulated coordinates, native st.map)
-# -----------------------------------------------------------------------------
-# NOTE: the uploaded dataset has no real GPS coordinates (the project brief's
-# Section/Defect/Severity/Area/IRI columns don't include location data), so
-# this generates SIMULATED, illustrative coordinates by walking a straight
-# line of N x 100m sections from a user-chosen start point and bearing. This
-# is clearly labelled as simulated everywhere it appears. Uses Streamlit's
-# native st.map (pydeck-backed) — no extra geo libraries required, so this
-# stays robust against the dependency/deployment issues seen earlier.
-EARTH_RADIUS_M = 6371000.0
-
-
-def simulate_section_coords(sections: list, start_lat: float, start_lon: float,
-                             bearing_deg: float, spacing_m: float) -> pd.DataFrame:
-    bearing_rad = math.radians(bearing_deg)
-    rows = []
-    lat0_rad = math.radians(start_lat)
-    for i, sec in enumerate(sections):
-        dist = spacing_m * i
-        dlat = (dist * math.cos(bearing_rad)) / EARTH_RADIUS_M
-        dlon = (dist * math.sin(bearing_rad)) / (EARTH_RADIUS_M * math.cos(lat0_rad))
-        lat = start_lat + math.degrees(dlat)
-        lon = start_lon + math.degrees(dlon)
-        rows.append({"Section": sec, "lat": lat, "lon": lon})
-    return pd.DataFrame(rows)
-
-
-# -----------------------------------------------------------------------------
-# BONUS FEATURE 3 — AUTOMATED REPORT GENERATION (self-contained HTML)
+# BONUS FEATURE 2 — AUTOMATED REPORT GENERATION (self-contained HTML)
 # -----------------------------------------------------------------------------
 # NOTE: deliberately built with ZERO new pip dependencies (no reportlab/fpdf/
 # weasyprint) given how much trouble missing packages have already caused on
@@ -677,10 +714,35 @@ def build_html_report(summary_df, detail_df, data_source, calc_flags, hybrid_df=
 
     detail_table_html = ""
     if detail_df is not None and not detail_df.empty:
-        detail_cols = ["Section", "Defect Type", "Severity", "Area Percentage (%)",
+        # Include Location if it was entered by the user (manual entry), else skip it
+        detail_cols = ["Section"]
+        if "Location" in detail_df.columns:
+            detail_cols.append("Location")
+        detail_cols += ["Defect Type", "Severity", "Area Percentage (%)",
                         "Weighting Factor", "Severity Factor", "Deduct Value",
                         "Suggested Defect Treatment"]
         detail_table_html = detail_df[detail_cols].to_html(index=False, classes="datatable", border=0)
+
+    # Build section summary for report — add Location column if available in raw data
+    report_summary = display_summary.copy()
+    if "df_raw" in dir() or True:  # always try — df_raw is in scope via closure arg
+        pass  # location is carried on detail_df rows; extract per-section below
+
+    # Extract one location label per section from detail_df if Location column exists
+    location_map = {}
+    if detail_df is not None and not detail_df.empty and "Location" in detail_df.columns:
+        for sec, grp in detail_df.groupby("Section"):
+            locs = [str(v) for v in grp["Location"].dropna() if str(v).strip() not in ("", "—")]
+            if locs:
+                # Use unique locations, joined if a section spans multiple entries
+                seen = []
+                for l in locs:
+                    if l not in seen:
+                        seen.append(l)
+                location_map[sec] = "; ".join(seen)
+
+    if location_map:
+        report_summary.insert(1, "Location", report_summary["Section"].map(location_map).fillna("—"))
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -728,7 +790,7 @@ def build_html_report(summary_df, detail_df, data_source, calc_flags, hybrid_df=
 {iri_chart}
 
 <h2>3. Section-Level Summary</h2>
-{display_summary.to_html(index=False, classes="datatable", border=0)}
+{report_summary.to_html(index=False, classes="datatable", border=0)}
 
 <h2>4. Defect-Level Detail</h2>
 {detail_table_html or "<p><em>No defect-level data in this dataset.</em></p>"}
@@ -789,7 +851,7 @@ st.markdown(
 # Each function below is one entry in the sidebar navigation. Streamlit's
 # st.navigation/st.Page only executes the SELECTED page's function on each
 # rerun — this is the main reason the app should feel noticeably snappier
-# than the previous st.tabs version, especially the Charts/GIS/Report pages
+# than the previous st.tabs version, especially the Charts/Report pages
 # which do the most work.
 # =============================================================================
 
@@ -861,7 +923,7 @@ If you do not have a spreadsheet file ready, you can type your data directly int
 3. Click **➕ Add Row**. The row appears in the table below the form.
 4. Repeat for every defect on every section. If a section has more than one defect, add one row per defect — use the same Section ID each time (e.g. add `S1/Potholes/High/6/3.8` as one row, then `S1/Raveling/Low/10/3.8` as a second row).
 5. Made a mistake? Use the **Delete selected row** field to remove a specific row by its row number, or **Clear all rows** to start over.
-6. When all your data is entered, click **✅ Use This Data for Analysis**. The tool immediately loads your data and it becomes available on the Dashboard, Charts, Hybrid Index, GIS Map, and Report pages.
+6. When all your data is entered, click **✅ Use This Data for Analysis**. The tool immediately loads your data and it becomes available on the Dashboard, Charts, Hybrid Index, and Report pages.
 7. Optionally, click **⬇️ Download as CSV** to save what you entered as a `.csv` file — you can re-upload this file later without needing to re-enter everything.
 
 > **Tip:** you can mix approaches. For example, enter your data manually first to test the tool, then download the CSV, add more rows in Excel, and re-upload it later.
@@ -882,7 +944,6 @@ Once data is loaded, navigate the pages in the sidebar:
 | 📋 **Detailed Results** | Full section-level summary table, defect-level computation breakdown, and download buttons |
 | 📈 **Charts** | Interactive bar charts — PCI by section, IRI by section, defect type distribution, and condition rating distribution |
 | 🧮 **Hybrid Index** | A single 0-100 score per section that blends PCI and IRI together — see Step 4 below |
-| 🗺️ **GIS Map** | A visual map showing your sections plotted by location — see Step 5 below |
 | 📄 **Report Generator** | Auto-generates a complete HTML report you can download and print as PDF |
 | 📐 **Methodology & Assumptions** | Full explanation of every formula, factor, and assumption used in all calculations |
         """
@@ -917,35 +978,7 @@ The **Hybrid Index** page adds a different, optional view: instead of a category
     st.divider()
 
     # --- Step 5 ---
-    st.markdown("### Step 5 — View the GIS Map")
-    st.markdown(
-        """
-The **GIS Map** page shows your road sections plotted on an interactive map, colour-coded by condition (🟢 Very Good, 🔵 Good, 🟡 Fair, 🔴 Poor).
-
-**Important note:** pavement survey data (defect types, severity, IRI) does not include GPS coordinates, so the positions on the map are **simulated** — the sections are placed along a straight illustrative route, not their real physical locations. This is clearly labelled on the page.
-
-**The 4 controls on the GIS Map page:**
-
-| Control | What it does | Suggested value |
-|---|---|---|
-| **Start latitude** | Sets where section S1 appears on the map (north–south position) | `1.4655` — a point near Kuching, Sarawak |
-| **Start longitude** | Sets where section S1 appears on the map (east–west position) | `110.4538` |
-| **Road direction (° from North)** | The direction the simulated road runs. 0° = North, 90° = East, 180° = South, 270° = West. | `90` (runs East) |
-| **Spacing between sections (m)** | How far apart consecutive sections are placed | `100` (each section is 100m long) |
-
-**How to use the page:**
-1. Open **GIS Map** in the sidebar.
-2. Leave the defaults, or change the start point to a location on the road you are studying.
-3. The map and the section coordinate table below it update immediately.
-4. Hover over any dot on the map to see the section name and condition details.
-5. The colour of each dot reflects the **Combined Condition Rating** — so even though positions are simulated, the colour coding is based on your real computed results.
-        """
-    )
-
-    st.divider()
-
-    # --- Step 6 ---
-    st.markdown("### Step 6 — Generate and download a report")
+    st.markdown("### Step 5 — Generate and download a report")
     st.markdown(
         """
 The **Report Generator** page builds a complete, self-contained report in one click.
@@ -1007,42 +1040,80 @@ def page_manual_entry():
                 help="How severe the defect is.",
             )
 
-        c4, c5 = st.columns(2)
+        c4, c5, c6 = st.columns(3)
         with c4:
-            area_input = st.number_input(
+            area_str = st.text_input(
                 "Area Percentage (%)",
-                min_value=0.0, max_value=100.0, value=0.0, step=0.5,
-                help="Percentage of the section area affected by this defect (0–100).",
+                value="",
+                placeholder="e.g. 6.5",
+                help="Percentage of the section area affected by this defect (0–100). Type any number.",
             )
         with c5:
-            iri_input = st.number_input(
+            iri_str = st.text_input(
                 "IRI (m/km)",
-                min_value=0.0, max_value=20.0, value=0.0, step=0.1,
+                value="",
+                placeholder="e.g. 3.8",
                 help="International Roughness Index reading for this section (m/km). "
-                     "Leave as 0 if you are only recording defect data (no roughness measurement).",
+                     "Leave blank if you are only recording defect data (no roughness measurement).",
+            )
+        with c6:
+            location_input = st.text_input(
+                "Location",
+                value="",
+                placeholder="e.g. Jalan Batu Kawa, KM 2.5",
+                help="Optional — describe where this section is located (road name, chainage, landmark, etc.).",
             )
 
         submitted = st.form_submit_button("➕ Add Row", type="primary", use_container_width=True)
 
     if submitted:
-        if not section_input.strip():
+        # Parse text inputs with friendly errors
+        area_input = 0.0
+        iri_input = 0.0
+        parse_ok = True
+
+        if area_str.strip():
+            try:
+                area_input = float(area_str.strip())
+                if not (0.0 <= area_input <= 100.0):
+                    st.error("Area Percentage must be between 0 and 100.")
+                    parse_ok = False
+            except ValueError:
+                st.error(f"Area Percentage — '{area_str}' is not a valid number. Please type a number like 6.5")
+                parse_ok = False
+
+        if iri_str.strip():
+            try:
+                iri_input = float(iri_str.strip())
+                if iri_input < 0:
+                    st.error("IRI cannot be negative.")
+                    parse_ok = False
+            except ValueError:
+                st.error(f"IRI — '{iri_str}' is not a valid number. Please type a number like 3.8")
+                parse_ok = False
+
+        if not parse_ok:
+            pass
+        elif not section_input.strip():
             st.error("Section ID is required. Please enter a section name (e.g. S1).")
         elif area_input == 0.0 and iri_input == 0.0:
             st.warning(
-                "Both Area Percentage and IRI are 0. "
+                "Both Area Percentage and IRI are 0 (or blank). "
                 "Please enter at least one non-zero value before adding this row.",
             )
         else:
             new_row = {
                 "Section": section_input.strip().upper(),
+                "Location": location_input.strip() if location_input.strip() else "—",
                 "Defect Type": defect_input if area_input > 0 else None,
                 "Severity": severity_input if area_input > 0 else None,
                 "Area Percentage (%)": area_input if area_input > 0 else None,
                 "IRI": iri_input if iri_input > 0 else None,
             }
             st.session_state["manual_rows"].append(new_row)
+            loc_str = f", 📍 {location_input.strip()}" if location_input.strip() else ""
             st.success(
-                f"Row added — Section **{new_row['Section']}**, "
+                f"Row added — Section **{new_row['Section']}**{loc_str}, "
                 f"{defect_input} ({severity_input}), "
                 f"Area {area_input}%, IRI {iri_input} m/km."
             )
@@ -1091,7 +1162,7 @@ def page_manual_entry():
                 "✅ Use This Data for Analysis",
                 type="primary",
                 use_container_width=True,
-                help="Sends all rows above to the Dashboard, Charts, Hybrid Index, GIS Map, and Report pages.",
+                help="Sends all rows above to the Dashboard, Charts, Hybrid Index, and Report pages.",
             ):
                 out_df = pd.DataFrame(rows)
                 for col in CANONICAL_COLS:
@@ -1112,13 +1183,16 @@ def page_manual_entry():
 
         with col_csv:
             out_df_dl = pd.DataFrame(rows)
+            # Include Location in the download so users keep their notes,
+            # but ensure CANONICAL_COLS are present too
             for col in CANONICAL_COLS:
                 if col not in out_df_dl.columns:
                     out_df_dl[col] = None
-            out_df_dl = out_df_dl[CANONICAL_COLS]
+            dl_cols = ["Section", "Location"] + [c for c in CANONICAL_COLS if c != "Section"]
+            dl_cols = [c for c in dl_cols if c in out_df_dl.columns]
             st.download_button(
                 "⬇️ Download as CSV",
-                data=out_df_dl.to_csv(index=False).encode("utf-8"),
+                data=out_df_dl[dl_cols].to_csv(index=False).encode("utf-8"),
                 file_name=f"manual_entry_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -1229,7 +1303,7 @@ def page_dashboard():
         st.markdown("##### Section Condition Overview")
         show_cols = ["Section", "PCI", "PCI Condition", "Avg IRI (m/km)", "IRI Condition",
                      "Combined Condition Rating", "Maintenance Recommendation"]
-        st.dataframe(summary_df[show_cols], use_container_width=True, height=380)
+        st.dataframe(style_dataframe(summary_df[show_cols]), use_container_width=True, height=380)
     with colR:
         st.markdown("##### Condition Rating Distribution")
         dist = summary_df["Combined Condition Rating"].value_counts().reset_index()
@@ -1254,19 +1328,74 @@ def page_detailed_results():
         st.info("Load data to see detailed results.")
         return
 
-    st.markdown("##### 1. Section-Level Summary (PCI, IRI, Combined Rating, Recommendation)")
+    all_sections   = list(summary_df["Section"])
+    all_conditions = sorted(summary_df["Combined Condition Rating"].dropna().unique().tolist())
+
+    st.markdown("#### 🔍 Filter")
+    st.caption("Filters here also apply to the **Charts** page automatically.")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        selected_sections = st.multiselect(
+            "Filter by Section",
+            options=all_sections,
+            default=[],
+            placeholder="All sections — click to filter by section",
+            key="detail_section_filter",
+        )
+    with col_f2:
+        selected_conditions = st.multiselect(
+            "Filter by Condition Rating",
+            options=all_conditions,
+            default=[],
+            placeholder="All conditions — click to filter by rating",
+            key="detail_condition_filter",
+        )
+
+    # Resolve active sections: apply both filters (section AND condition)
+    active_sections = all_sections  # start with all
+    if selected_sections:
+        active_sections = [s for s in active_sections if s in selected_sections]
+    if selected_conditions:
+        cond_match = summary_df[summary_df["Combined Condition Rating"].isin(selected_conditions)]["Section"].tolist()
+        active_sections = [s for s in active_sections if s in cond_match]
+
+    # Persist to session state so Charts can read it without its own filter UI
+    st.session_state["_active_sections"] = active_sections
+
+    if selected_sections or selected_conditions:
+        st.caption(
+            f"Showing **{len(active_sections)}** of **{len(all_sections)}** sections"
+            + (f" · Sections: {', '.join(active_sections)}" if active_sections else " · No sections match — adjust filters")
+        )
+    st.divider()
+
     display_summary = summary_df.drop(columns=["_rank"])
-    st.dataframe(display_summary, use_container_width=True, height=320)
+    filtered_summary = display_summary[display_summary["Section"].isin(active_sections)]
+
+    st.markdown("##### 1. Section-Level Summary (PCI, IRI, Combined Rating, Recommendation)")
+    if filtered_summary.empty:
+        st.warning("No sections match the current filter. Try widening your selection.")
+    else:
+        st.dataframe(style_dataframe(filtered_summary), use_container_width=True,
+                     height=min(600, 80 + 35 * len(filtered_summary)))
 
     st.markdown("##### 2. Defect-Level Detail & Computation")
     if detail_df is None or detail_df.empty:
         st.info("No defect-level rows found in the uploaded data (Defect Type / Severity / Area % missing).")
     else:
-        detail_show = detail_df[[
-            "Section", "Defect Type", "Severity", "Area Percentage (%)",
-            "Weighting Factor", "Severity Factor", "Deduct Value", "Suggested Defect Treatment"
-        ]].reset_index(drop=True)
-        st.dataframe(detail_show, use_container_width=True, height=320)
+        detail_base_cols = ["Section"]
+        if detail_df is not None and "Location" in detail_df.columns:
+            detail_base_cols.append("Location")
+        detail_base_cols += ["Defect Type", "Severity", "Area Percentage (%)",
+                              "Weighting Factor", "Severity Factor", "Deduct Value",
+                              "Suggested Defect Treatment"]
+        detail_show = detail_df[detail_base_cols].reset_index(drop=True)
+        filtered_detail = detail_show[detail_show["Section"].isin(active_sections)]
+        if filtered_detail.empty:
+            st.warning("No defect rows match the current filter.")
+        else:
+            st.dataframe(style_dataframe(filtered_detail), use_container_width=True,
+                         height=min(500, 80 + 35 * len(filtered_detail)))
         st.caption(
             "Deduct Value = Area (%) × Severity Factor × Weighting Factor. "
             "'Suggested Defect Treatment' is supplementary general guidance per "
@@ -1275,54 +1404,54 @@ def page_detailed_results():
         )
 
     st.markdown("##### 3. Download Analysed Results")
-    c1, c2 = st.columns(2)
     ts = datetime.now().strftime("%Y%m%d_%H%M")
+    sheets = {
+        "Section_Summary": display_summary,
+        "Defect_Detail": detail_df if detail_df is not None else pd.DataFrame(),
+        "Raw_Input": df_raw,
+    }
+
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.download_button(
-            "⬇️ Download Section Summary (CSV)",
+            "⬇️ Section Summary (CSV)",
             data=display_summary.to_csv(index=False).encode("utf-8"),
-            file_name=f"pavement_section_summary_{ts}.csv",
+            file_name=f"section_summary_{ts}.csv",
             mime="text/csv",
             use_container_width=True,
+            help="Downloads the section-level results as a single CSV file.",
         )
     with c2:
-        if not OPENPYXL_OK:
-            st.button(
-                "⬇️ Download Full Results (Excel) — unavailable",
-                disabled=True, use_container_width=True,
-                help="The 'openpyxl' package isn't available in this server environment right now.",
-            )
-            st.caption(
-                "⚠️ Excel download is temporarily unavailable on this server "
-                "(missing 'openpyxl' package) — use the CSV download on the left instead."
-            )
-        else:
+        zip_bytes = df_to_zip_bytes(sheets)
+        st.download_button(
+            "⬇️ Full Results (ZIP — 3 CSVs)",
+            data=zip_bytes,
+            file_name=f"pavement_results_{ts}.zip",
+            mime="application/zip",
+            use_container_width=True,
+            help="Downloads all three result tables as separate CSVs inside a ZIP file. Works on all servers.",
+        )
+    with c3:
+        if OPENPYXL_OK:
             try:
-                excel_bytes = df_to_excel_bytes({
-                    "Section_Summary": display_summary,
-                    "Defect_Detail": detail_df if detail_df is not None else pd.DataFrame(),
-                    "Raw_Input": df_raw,
-                })
+                excel_bytes = df_to_excel_bytes(sheets)
                 st.download_button(
-                    "⬇️ Download Full Results (Excel, 3 sheets)",
+                    "⬇️ Full Results (Excel)",
                     data=excel_bytes,
-                    file_name=f"pavement_analysis_results_{ts}.xlsx",
+                    file_name=f"pavement_results_{ts}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
+                    help="Downloads all three result tables in a single Excel workbook (3 sheets).",
                 )
             except Exception as e:
-                st.caption(f"⚠️ Excel export failed ({e}). Use the CSV download on the left instead.")
-
-    if not OPENPYXL_OK:
-        with st.expander("ℹ️ Why is Excel upload/download unavailable? (click to view)"):
-            st.markdown(
-                "This server's Python environment is missing the **openpyxl** package, "
-                "which both Excel *upload* and Excel *download* depend on. This is almost "
-                "always a deployment/server-side issue, not a problem with your data.\n\n"
-                "**If you're the app owner (Streamlit Community Cloud):** delete the app and "
-                "redeploy it, choosing Python 3.11 or 3.12 in **Advanced settings** before "
-                "clicking Deploy. In the meantime, CSV upload/download both work normally."
+                st.caption(f"⚠️ Excel export failed: {e}")
+        else:
+            st.button(
+                "⬇️ Full Results (Excel) — unavailable",
+                disabled=True, use_container_width=True,
+                help="openpyxl package not installed on this server. Use the ZIP download instead.",
             )
+            st.caption("Use the ZIP download above — it contains the same data as 3 separate CSV files.")
 
 
 def page_charts():
@@ -1333,23 +1462,40 @@ def page_charts():
         st.info("Load data to see charts.")
         return
 
-    if not PLOTLY_OK:
-        st.warning(
-            "Plotly isn't installed in this environment, so charts below use "
-            "Streamlit's simplified built-in charts. Add `plotly` to "
-            "requirements.txt and reboot the app for the full interactive charts.",
-            icon="⚠️",
+    # Read active sections set by the filter on Detailed Results page.
+    # If user hasn't visited that page yet, default to all sections.
+    all_sections = list(summary_df["Section"])
+    active_sections = st.session_state.get("_active_sections", all_sections)
+    # Guard: if session was cleared or data reloaded, fall back to all
+    active_sections = [s for s in active_sections if s in all_sections] or all_sections
+
+    # Show a small info banner so user knows which filter is applied
+    if active_sections != all_sections:
+        st.info(
+            f"📋 Filter active from **Detailed Results** page — "
+            f"showing {len(active_sections)} of {len(all_sections)} sections: "
+            f"{', '.join(active_sections)}. "
+            "Go to **Detailed Results** to change the filter.",
+            icon="🔍",
         )
 
+    # Apply filter
+    filtered_summary = summary_df[summary_df["Section"].isin(active_sections)]
+    filtered_detail  = detail_df[detail_df["Section"].isin(active_sections)] if (detail_df is not None and not detail_df.empty) else None
+    section_order    = [s for s in all_sections if s in active_sections]
+
+    st.divider()
+
+    # ── PCI by Section ────────────────────────────────────────────────────────
     st.markdown("##### PCI by Section")
-    pci_chart_df = summary_df.dropna(subset=["PCI"])
+    pci_chart_df = filtered_summary.dropna(subset=["PCI"])
     if pci_chart_df.empty:
-        st.caption("No PCI data available to chart.")
+        st.caption("No PCI data available for the selected section(s).")
     elif PLOTLY_OK:
         fig1 = px.bar(
             pci_chart_df, x="Section", y="PCI", color="PCI Condition",
             color_discrete_map=CONDITION_COLORS, text="PCI",
-            category_orders={"Section": list(summary_df["Section"])},
+            category_orders={"Section": section_order},
         )
         fig1.add_hline(y=85, line_dash="dot", line_color="#2E7D32", annotation_text="Very Good ≥85")
         fig1.add_hline(y=70, line_dash="dot", line_color="#1976D2", annotation_text="Good ≥70")
@@ -1360,15 +1506,16 @@ def page_charts():
     else:
         st.bar_chart(pci_chart_df.set_index("Section")["PCI"])
 
+    # ── IRI by Section ────────────────────────────────────────────────────────
     st.markdown("##### IRI by Section")
-    iri_chart_df = summary_df.dropna(subset=["Avg IRI (m/km)"])
+    iri_chart_df = filtered_summary.dropna(subset=["Avg IRI (m/km)"])
     if iri_chart_df.empty:
-        st.caption("No IRI data available to chart.")
+        st.caption("No IRI data available for the selected section(s).")
     elif PLOTLY_OK:
         fig2 = px.bar(
             iri_chart_df, x="Section", y="Avg IRI (m/km)", color="IRI Condition",
             color_discrete_map=CONDITION_COLORS, text="Avg IRI (m/km)",
-            category_orders={"Section": list(summary_df["Section"])},
+            category_orders={"Section": section_order},
         )
         fig2.add_hline(y=2, line_dash="dot", line_color="#2E7D32", annotation_text="Very Good <2")
         fig2.add_hline(y=3, line_dash="dot", line_color="#1976D2", annotation_text="Good <3")
@@ -1381,11 +1528,12 @@ def page_charts():
 
     colA, colB = st.columns(2)
     with colA:
+        # ── Defect Type Distribution ──────────────────────────────────────────
         st.markdown("##### Defect Type Distribution")
-        if detail_df is None or detail_df.empty:
-            st.caption("No defect-level data available to chart.")
+        if filtered_detail is None or filtered_detail.empty:
+            st.caption("No defect-level data available for the selected section(s).")
         else:
-            defect_counts = detail_df.groupby(["Defect Type", "Severity"]).size().reset_index(name="Count")
+            defect_counts = filtered_detail.groupby(["Defect Type", "Severity"]).size().reset_index(name="Count")
             if PLOTLY_OK:
                 fig3 = px.bar(
                     defect_counts, x="Defect Type", y="Count", color="Severity",
@@ -1399,8 +1547,9 @@ def page_charts():
                 st.bar_chart(pivot)
 
     with colB:
+        # ── Condition Rating Distribution ─────────────────────────────────────
         st.markdown("##### Condition Rating Distribution")
-        dist2 = summary_df["Combined Condition Rating"].value_counts().reset_index()
+        dist2 = filtered_summary["Combined Condition Rating"].value_counts().reset_index()
         dist2.columns = ["Condition", "Count"]
         if PLOTLY_OK:
             fig4 = px.bar(
@@ -1412,19 +1561,20 @@ def page_charts():
         else:
             st.bar_chart(dist2.set_index("Condition")["Count"])
 
+    # ── Defects by Section ────────────────────────────────────────────────────
     st.markdown("##### Defects by Section (stacked)")
-    if detail_df is None or detail_df.empty:
-        st.caption("No defect-level data available to chart.")
+    if filtered_detail is None or filtered_detail.empty:
+        st.caption("No defect-level data available for the selected section(s).")
     elif PLOTLY_OK:
-        by_section = detail_df.groupby(["Section", "Defect Type"]).size().reset_index(name="Count")
+        by_section = filtered_detail.groupby(["Section", "Defect Type"]).size().reset_index(name="Count")
         fig5 = px.bar(
             by_section, x="Section", y="Count", color="Defect Type", barmode="stack",
-            category_orders={"Section": list(summary_df["Section"])},
+            category_orders={"Section": section_order},
         )
         fig5.update_layout(height=380, margin=dict(t=10, b=10))
         st.plotly_chart(fig5, use_container_width=True)
     else:
-        by_section = detail_df.groupby(["Section", "Defect Type"]).size().reset_index(name="Count")
+        by_section = filtered_detail.groupby(["Section", "Defect Type"]).size().reset_index(name="Count")
         pivot2 = by_section.pivot_table(index="Section", columns="Defect Type", values="Count", fill_value=0)
         st.bar_chart(pivot2)
 
@@ -1456,7 +1606,7 @@ def page_hybrid_index():
     st.session_state["_hybrid_df"] = hybrid_df  # cache for Report page
 
     show_cols = ["Section", "PCI", "Avg IRI (m/km)", "IRI Score (0-100)", "Hybrid Index", "Hybrid Condition"]
-    st.dataframe(hybrid_df[show_cols], use_container_width=True, height=340)
+    st.dataframe(style_dataframe(hybrid_df[show_cols]), use_container_width=True, height=340)
 
     st.markdown("##### Hybrid Index by Section")
     chart_df = hybrid_df.dropna(subset=["Hybrid Index"])
@@ -1480,51 +1630,6 @@ def page_hybrid_index():
         data=csv_bytes,
         file_name=f"hybrid_index_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
         mime="text/csv",
-    )
-
-
-def page_gis_map():
-    st.subheader("🗺️ GIS Map (Bonus — Simulated)")
-    summary_df = st.session_state.get("_summary_df")
-    if summary_df is None or summary_df.empty:
-        st.info("Load data to see the map.")
-        return
-
-    st.warning(
-        "Your dataset has no real GPS coordinates, so the positions below are "
-        "**simulated** — sections are plotted along a straight illustrative "
-        "route, spaced out using the settings you choose. Use this to "
-        "demonstrate a GIS-style view; replace with real survey coordinates "
-        "for actual asset-management use.",
-        icon="🗺️",
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        start_lat = st.number_input("Start latitude", value=1.4655, format="%.4f", key="gis_lat")
-    with c2:
-        start_lon = st.number_input("Start longitude", value=110.4538, format="%.4f", key="gis_lon")
-    with c3:
-        bearing = st.slider("Road direction (° from North)", 0, 359, 90, key="gis_bearing")
-    with c4:
-        spacing = st.number_input("Spacing between sections (m)", min_value=10, value=100, step=10, key="gis_spacing")
-
-    sections = list(summary_df["Section"])
-    coords = simulate_section_coords(sections, start_lat, start_lon, bearing, spacing)
-    map_df = coords.merge(summary_df[["Section", "PCI", "Avg IRI (m/km)", "Combined Condition Rating"]], on="Section", how="left")
-    map_df["color"] = map_df["Combined Condition Rating"].map(CONDITION_COLORS).fillna("#777777")
-    map_df["size"] = spacing * 0.6
-
-    st.map(map_df, latitude="lat", longitude="lon", color="color", size="size")
-
-    st.markdown("##### Section Coordinates (simulated)")
-    st.dataframe(
-        map_df[["Section", "lat", "lon", "PCI", "Avg IRI (m/km)", "Combined Condition Rating"]],
-        use_container_width=True, height=300,
-    )
-    st.caption(
-        "🟢 Very Good · 🔵 Good · 🟡 Fair · 🔴 Poor — colours match the condition "
-        "rating used throughout the rest of the app."
     )
 
 
@@ -1637,7 +1742,7 @@ section, the **worse (more severe)** of the two condition classes governs
 the combined rating and its recommendation. If only one indicator is
 available for a section, that indicator alone determines the rating.
 
-### 4. Hybrid Index (bonus page) — numeric blend, additional to #3
+### 4. Hybrid Index — numeric blend, additional to #3
 
 The **Hybrid Index** page adds a second, optional way of combining PCI and
 IRI: instead of taking the worse classification, it rescales IRI onto the
@@ -1653,15 +1758,7 @@ Hybrid Index = w × PCI + (1 − w) × IRI Score      (w adjustable in-app, defa
 This is clearly separated from the official rating in #3 throughout the app
 and in the downloadable report.
 
-### 5. GIS Map (bonus page) — simulated coordinates
-
-The dataset has no real GPS coordinates, so the GIS Map page **simulates**
-section positions along a straight illustrative route from a user-chosen
-start point, bearing, and spacing (default 100 m, matching the project
-brief's "100m sections"). This is explicitly labelled as simulated wherever
-it appears — replace with real survey coordinates for actual use.
-
-### 6. Automated Report Generation (bonus page)
+### 5. Automated Report Generation
 
 Builds a single self-contained HTML file (KPIs, inline SVG charts, full
 tables) with no additional PDF library — keeping the app's dependency
@@ -1669,7 +1766,7 @@ footprint minimal and resistant to the kind of deployment breakage seen with
 optional packages on some hosting platforms. Open the file in any browser
 and use Print → Save as PDF for a PDF copy.
 
-### 7. Other assumptions made explicit by this tool
+### 6. Other assumptions made explicit by this tool
 
 - **Unrecognised defect type** → neutral weighting factor of **1.0** substituted, flagged on Dashboard.
 - **Unrecognised severity** → treated as **Medium (factor 1.0)**, flagged.
@@ -1704,7 +1801,6 @@ with st.sidebar:
             st.Page(page_detailed_results, title="Detailed Results", icon="📋"),
             st.Page(page_charts, title="Charts", icon="📈"),
             st.Page(page_hybrid_index, title="Hybrid Index", icon="🧮"),
-            st.Page(page_gis_map, title="GIS Map", icon="🗺️"),
             st.Page(page_report_generator, title="Report Generator", icon="📄"),
             st.Page(page_methodology, title="Methodology & Assumptions", icon="📐"),
         ]
@@ -1729,6 +1825,9 @@ with st.sidebar:
         st.session_state.pop("data_source", None)
         st.session_state.pop("_hybrid_df", None)
         st.session_state.pop("_report_html", None)
+        st.session_state.pop("_active_sections", None)
+        st.session_state.pop("detail_section_filter", None)
+        st.session_state.pop("detail_condition_filter", None)
 
     if uploaded_file is not None:
         try:
@@ -1768,6 +1867,20 @@ df_raw = st.session_state.get("df_raw")
 detail_df, summary_df, calc_flags = (None, None, [])
 if df_raw is not None and "Section" in df_raw.columns:
     detail_df, summary_df, calc_flags = compute_results(df_raw)
+
+    # If the raw data has a Location column (from manual entry), merge it back
+    # onto detail_df so it flows through to the Detailed Results table and report.
+    # compute_results only processes CANONICAL_COLS so Location is stripped there;
+    # we re-attach it here by joining on Section + row-order within each section.
+    if detail_df is not None and not detail_df.empty and "Location" in df_raw.columns:
+        loc_lookup = (
+            df_raw[df_raw["Location"].notna() & (df_raw["Location"].astype(str).str.strip() != "")]
+            [["Section", "Location"]]
+            .drop_duplicates(subset=["Section"])
+        )
+        detail_df = detail_df.merge(loc_lookup, on="Section", how="left")
+        detail_df["Location"] = detail_df["Location"].fillna("—")
+
 st.session_state["_detail_df"] = detail_df
 st.session_state["_summary_df"] = summary_df
 st.session_state["_calc_flags"] = calc_flags
