@@ -1405,31 +1405,53 @@ def page_detailed_results():
 
     st.markdown("##### 3. Download Analysed Results")
     ts = datetime.now().strftime("%Y%m%d_%H%M")
+
+    # Use filtered data if a filter is active, otherwise use all data
+    is_filtered = active_sections != all_sections
+    download_summary = filtered_summary if is_filtered else display_summary
+    download_detail  = (
+        detail_df[detail_df["Section"].isin(active_sections)].reset_index(drop=True)
+        if (is_filtered and detail_df is not None and not detail_df.empty)
+        else (detail_df if detail_df is not None else pd.DataFrame())
+    )
+    download_raw = (
+        df_raw[df_raw["Section"].isin(active_sections)].reset_index(drop=True)
+        if (is_filtered and df_raw is not None)
+        else (df_raw if df_raw is not None else pd.DataFrame())
+    )
+
+    if is_filtered:
+        st.caption(
+            f"⚠️ Filter is active — downloads will contain only the **{len(active_sections)} selected section(s)**: "
+            f"{', '.join(active_sections)}. Clear the filter above to download all sections."
+        )
+
+    file_tag = f"filtered_{len(active_sections)}sec" if is_filtered else "all"
     sheets = {
-        "Section_Summary": display_summary,
-        "Defect_Detail": detail_df if detail_df is not None else pd.DataFrame(),
-        "Raw_Input": df_raw,
+        "Section_Summary": download_summary,
+        "Defect_Detail": download_detail,
+        "Raw_Input": download_raw,
     }
 
     c1, c2, c3 = st.columns(3)
     with c1:
         st.download_button(
             "⬇️ Section Summary (CSV)",
-            data=display_summary.to_csv(index=False).encode("utf-8"),
-            file_name=f"section_summary_{ts}.csv",
+            data=download_summary.to_csv(index=False).encode("utf-8"),
+            file_name=f"section_summary_{file_tag}_{ts}.csv",
             mime="text/csv",
             use_container_width=True,
-            help="Downloads the section-level results as a single CSV file.",
+            help=f"Downloads section-level results — {'filtered selection' if is_filtered else 'all sections'}.",
         )
     with c2:
         zip_bytes = df_to_zip_bytes(sheets)
         st.download_button(
             "⬇️ Full Results (ZIP — 3 CSVs)",
             data=zip_bytes,
-            file_name=f"pavement_results_{ts}.zip",
+            file_name=f"pavement_results_{file_tag}_{ts}.zip",
             mime="application/zip",
             use_container_width=True,
-            help="Downloads all three result tables as separate CSVs inside a ZIP file. Works on all servers.",
+            help=f"Downloads all three tables as CSVs — {'filtered selection' if is_filtered else 'all sections'}.",
         )
     with c3:
         if OPENPYXL_OK:
@@ -1438,10 +1460,10 @@ def page_detailed_results():
                 st.download_button(
                     "⬇️ Full Results (Excel)",
                     data=excel_bytes,
-                    file_name=f"pavement_results_{ts}.xlsx",
+                    file_name=f"pavement_results_{file_tag}_{ts}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    help="Downloads all three result tables in a single Excel workbook (3 sheets).",
+                    help=f"Downloads all three tables in one Excel workbook — {'filtered selection' if is_filtered else 'all sections'}.",
                 )
             except Exception as e:
                 st.caption(f"⚠️ Excel export failed: {e}")
@@ -1452,6 +1474,7 @@ def page_detailed_results():
                 help="openpyxl package not installed on this server. Use the ZIP download instead.",
             )
             st.caption("Use the ZIP download above — it contains the same data as 3 separate CSV files.")
+
 
 
 def page_charts():
