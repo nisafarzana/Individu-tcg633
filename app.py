@@ -1603,7 +1603,7 @@ def page_charts():
 
 
 def page_hybrid_index():
-    st.subheader("🧮 Hybrid Index (Bonus)")
+    st.subheader("🧮 Hybrid Index")
     summary_df = st.session_state.get("_summary_df")
     if summary_df is None or summary_df.empty:
         st.info("Load data to compute a hybrid index.")
